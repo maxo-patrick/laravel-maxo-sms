@@ -1,0 +1,619 @@
+openapi: 3.0.3
+info:
+  title: MaxoTel Laravel SMS
+  version: 1.0.0
+  description: |
+    Idiomatic Laravel access to the MaxoTel SMS API. Australian mobiles only. Requires PHP ^8.4 and Laravel 12.
+
+    This page documents the HTTP operations the package calls. Your application code uses the `Sms` facade and the `SmsInboxes` / `SmsHistory` contracts. It does not build these HTTP requests. The package POSTs `application/x-www-form-urlencoded`. Live Maxo rejects a JSON body with HTTP 403 `Invalid API Key`. Maxo also accepts the same fields as a query string. Do not send a Bearer token. `messages()` does not send `outputFormat` or `showHeadings`. `messagesCsv()` does.
+
+    ## Install
+
+    These commands add the package, then copy `config/sms.php` and the `sms_logs` migration into your app.
+
+    ```bash
+    composer require maxotel/laravel-maxo-sms
+    php artisan vendor:publish --tag=sms-config
+    php artisan vendor:publish --tag=sms-migrations
+    php artisan migrate
+    ```
+
+    ## Configuration
+
+    Sender, inbox, and API key are developer settings in `.env`. Do not put them in a page the operator can edit. There is no mail-style driver. This package talks only to MaxoTel.
+
+    ```env
+    SMS_CONNECTION=maxo
+    SMS_FROM=0411111111
+    SMS_PRETEND=false
+    MAXO_SMS_KEY=your-api-key
+    MAXO_SMS_BASE_URI=https://myapi.maxo.com.au/
+    MAXO_SMS_FROM=0411111111
+    MAXO_SMS_INBOX=
+    MAXO_SMS_SANDBOX_KEY=
+    MAXO_SMS_SANDBOX_FROM=
+    MAXO_SMS_SANDBOX_INBOX=
+    SMS_LOG_MESSAGES=false
+    SMS_STORE_BODY=false
+    SMS_STORE_PROVIDER_RESPONSE=false
+    SMS_RETAIN_DAYS=90
+    SMS_QUEUE_CONNECTION=
+    SMS_QUEUE=default
+    SMS_LOG_CONNECTION=
+    SMS_LOG_CHANNEL_ENABLED=false
+    SMS_LOG_CHANNEL=
+    ```
+
+    `SMS_CONNECTION` picks the named connection used when a call does not say `->connection()`. `maxo` reads `MAXO_SMS_*`. `maxo-sandbox` reads `MAXO_SMS_SANDBOX_*`. Empty is treated as `maxo`.
+
+    `SMS_FROM` is the last-resort sender for every connection. It is used only when that connection has no `from` of its own and the call does not use `->from()`. Example `0411111111`. If this and the connection sender are both empty, send throws `ConfigurationException`.
+
+    `SMS_PRETEND=false` sends for real. `true` skips HTTP and returns a successful `SmsResult` with a random id, a local segment count, and price `0`. Use that for a local dry run. Use `Sms::fake()` in tests instead. Pretend is not a second API host.
+
+    `MAXO_SMS_KEY` is the API key for the `maxo` connection. The package puts it in the JSON `key` field. Send needs **SMS/Send Messages**. Listing inboxes and reading messages also need **SMS/Get SMS Inbox**. Empty throws `ConfigurationException` on the first real send or inbox call.
+
+    `MAXO_SMS_BASE_URI` is the host for both `maxo` and `maxo-sandbox`. Production is `https://myapi.maxo.com.au/`. Point it at `http://127.0.0.1:8001/` to use the local mock. That mock is not the sandbox connection. `test-full-access` is public mock fixture data, not a production secret.
+
+    `MAXO_SMS_FROM` is the sender used by the `maxo` connection when the call does not use `->from()`. It becomes HTTP `origin`. Empty falls through to `SMS_FROM`.
+
+    `MAXO_SMS_INBOX` is the numeric inbox id for the `maxo` connection. Empty means `POST /sms/send` (no inbox on the message). A number such as `10` means `POST /sms/{inbox}/send`. `->inbox()` on one call overrides this.
+
+    `MAXO_SMS_SANDBOX_KEY`, `MAXO_SMS_SANDBOX_FROM`, and `MAXO_SMS_SANDBOX_INBOX` are a second key, sender, and inbox. They are used only when `SMS_CONNECTION=maxo-sandbox` or the call uses `Sms::connection('maxo-sandbox')`. Leave them empty until you have that second key. They share `MAXO_SMS_BASE_URI`.
+
+    `SMS_LOG_MESSAGES=false` writes nothing to `sms_logs`. History, the idempotency check, and any Sent screen need `true`. With it off, `SmsHistory` throws `HistoryUnavailableException`.
+
+    `SMS_STORE_BODY=false` still stores recipient and status, but not the message text. `true` stores the body. It only matters when logging is on.
+
+    `SMS_STORE_PROVIDER_RESPONSE=false` does not store Maxo's raw JSON. `true` stores it after `sms.redact` removes `key`, `authorization`, `password`, `secret`, and `token`. The API key is never stored.
+
+    `SMS_RETAIN_DAYS=90` is how long `sms_logs` rows are eligible for `model:prune`. `null` disables pruning. You must schedule `model:prune` yourself.
+
+    `SMS_QUEUE_CONNECTION` is the Laravel queue connection for `->queue()`. Empty uses the app's default queue connection. `SMS_QUEUE=default` is the queue name. The job always uses `tries=1` (`sms.queue.tries`). The package does not retry `sms/send`.
+
+    `SMS_LOG_CONNECTION` is the database connection for `sms_logs`. Empty uses the app's default database.
+
+    `SMS_LOG_CHANNEL_ENABLED=false` writes no application log line. `true` writes one line per SMS to `SMS_LOG_CHANNEL` (uuid, connection, recipient, status, error type). That line does not include the body or the raw response. Empty channel uses Laravel's default log channel.
+
+    Each connection also has `timeout` (10 seconds) and `connect_timeout` (5 seconds) in `config/sms.php`. They are not env keys.
+
+    Sender resolution order is `->from()` on that call, then the connection `from` (`MAXO_SMS_FROM` or `MAXO_SMS_SANDBOX_FROM`), then `SMS_FROM`.
+
+    ## Sending and results
+
+    This sends one SMS on the default connection. The package fills HTTP `key` from the connection, `origin` from the sender rules above, `destination` as a local `04` number, and `message` from `message()`.
+
+    ```php
+    use MaxoTel\Sms\Facades\Sms;
+
+    $result = Sms::to('0412345678')->message('Hello from Laravel')->send();
+    ```
+
+    `to()` is the recipient. `message()` is the body. `body()` is an alias for `message()`. `send()` returns one `SmsResult` for one recipient. It does not throw when Maxo rejects the message.
+
+    This sends on the sandbox connection, with an explicit sender and inbox, and attaches app data that Maxo does not see.
+
+    ```php
+    Sms::connection('maxo-sandbox')
+        ->to(['0412345678', '0499887766'])
+        ->from('0411111111')
+        ->inbox(10)
+        ->reference('order-1')
+        ->metadata(['user_id' => 15])
+        ->idempotencyKey('order-1')
+        ->send();
+    ```
+
+    `connection()` selects `maxo-sandbox` for this call only. Two recipients become two HTTP requests and an `SmsResultCollection`. `from()` overrides the env sender. `inbox(10)` sends through that inbox. `reference()` and `metadata()` are stored on your log row for your own lookup. They are not Maxo request fields. `idempotencyKey()` is a local `sms_logs` lookup on `(connection, key, recipient)`. A repeat send returns the stored result and does not call Maxo. It only works when `SMS_LOG_MESSAGES=true`.
+
+    `segments()` is a local GSM-7 / UCS-2 estimate before send. After send, `SmsResult::$parts` is the authoritative count from Maxo.
+
+    `SmsResult` fields:
+
+    - `successful` is true only when Maxo accepted the send.
+    - `failed()` is the opposite of `successful`.
+    - `status` is an `SmsStatus`: `pending`, `queued`, `sending`, `sent`, `failed`, or `rejected`. `sent` means accepted, not delivered. There is no package status `Delivered`.
+    - `smsId` is Maxo's `smsid` after acceptance.
+    - `parts` is Maxo's segment count.
+    - `price` is the AUD amount Maxo reported.
+    - `errorType` is an `SmsErrorType` or null.
+    - `errorMessage` is the human-readable failure.
+    - `throw()` throws `SmsSendException` when the result failed. `throwIf($condition)` does that only when the condition is true.
+    - `uuid` is the package id for this attempt. `recipient` is E.164. `sender` is the origin that was used.
+
+    `SmsResultCollection` is the multi-recipient return. `successful()` and `failed()` split the rows. `allSucceeded()` is true only when every row succeeded. `totalPrice()` sums `price`.
+
+    Missing key, missing sender, or an unknown connection name throws `ConfigurationException` before a useful send.
+
+    ## Phone numbers
+
+    Accepted forms are `0412345678`, `+61412345678`, `61412345678`, and spaced `0412 345 678`. The package stores E.164 (`+61412345678`) and sends `04…` to Maxo. Anything else, including a landline or an international number, is an `SmsResult` with `errorType` `invalid_recipient`. No HTTP request is made. One bad number and a list containing a bad number behave the same.
+
+    ## Queueing
+
+    `queue()` records the message as queued and dispatches a job instead of calling Maxo in the current request. One recipient is one job. Several recipients are one batch, one job each. `queue(now()->addHour())` delays that work.
+
+    ```php
+    Sms::to($number)->message($body)->queue();
+    Sms::to($numbers)->message($body)->queue();
+    ```
+
+    The job makes one send attempt (`sms.queue.tries` is 1). It does not release itself for another try. A failed job sits in `failed_jobs`. `php artisan queue:retry` sends again. That is risky for `indeterminate_error`, because the first attempt may already have reached Maxo.
+
+    ## Events
+
+    Listeners can record sends without reading `sms_logs`. A listener cannot cancel a send.
+
+    - `SmsSending` fires just before the HTTP call.
+    - `SmsSent` fires after Maxo accepts.
+    - `SmsFailed` fires when the package or Maxo rejects the send.
+    - `SmsQueued` fires when `queue()` dispatches work.
+
+    Each event carries the message `uuid` and the connection name. They still fire under `Sms::fake()`.
+
+    ## Notifications
+
+    Use Laravel’s notification system when a domain event should text a notifiable (for example a customer or user). Returning sms from via() selects this package’s channel. toSms() builds the PendingSms (message body, optional reference(), connection(), and so on). The channel sets the recipient from routeNotificationForSms() on the notifiable, then from $notifiable->phone_number if that method is missing.
+
+    ```php
+    public function via(object $notifiable): array
+    {
+        return ['sms'];
+    }
+
+    public function toSms(object $notifiable): \MaxoTel\Sms\PendingSms
+    {
+        return Sms::message('Your appointment is confirmed.')->reference('appointment-1');
+    }
+
+    public function routeNotificationForSms(): string
+    {
+        return $this->phone_number;
+    }
+    ```
+
+    A failed send throws `SmsSendException` so Laravel's notification failure handling runs. Put `ShouldQueue` on the notification class to queue it. The SMS channel does not queue by itself.
+
+    ## Inboxes
+
+    This reads Maxo's inbox, not your `sms_logs` table. `all()` returns `SmsInbox` objects (`id`, `name`, `senderId`). `messages()` returns `InboxMessage` rows for one inbox between `startTime` and `endTime`. `contact` limits the rows to one Australian mobile. Pass a connection name as the last argument to use sandbox credentials.
+
+    ```php
+    use MaxoTel\Sms\Contracts\SmsInboxes;
+    use MaxoTel\Sms\Data\InboxMessageQuery;
+
+    app(SmsInboxes::class)->all();
+    app(SmsInboxes::class)->messages(10, new InboxMessageQuery(
+        startTime: '2024-06-01',
+        endTime: '2024-06-30',
+        contact: '0412345678',
+    ));
+    app(SmsInboxes::class)->messagesCsv(10, new InboxMessageQuery('2024-06-01', '2024-06-30'));
+    ```
+
+    `InboxMessage` fields: `smsId`, `smsInbox`, `sentAt`, `contact` (E.164), `direction` (`Send` or `Receive`), `origin`, `destination`, `status`, `read`, `cost`, `body`. `status` is Maxo's raw string, such as `Delivered`. It is not an `SmsStatus` and it does not update a send this package already made.
+
+    A failed inbox call throws `SmsInboxException`. `errorType` is an `SmsErrorType`, `httpStatus` is the HTTP status (0 when the connection never completed), and `providerError` / `providerReason` are Maxo's `error` and `reason`. `messagesCsv()` returns the raw CSV from `outputFormat=csv`.
+
+    ## History
+
+    This reads this application's `sms_logs` table, not the Maxo inbox. It throws `HistoryUnavailableException` when `SMS_LOG_MESSAGES` is false.
+
+    ```php
+    use MaxoTel\Sms\Contracts\SmsHistory;
+    use MaxoTel\Sms\Data\SmsHistoryQuery;
+
+    $history = app(SmsHistory::class);
+    $history->find($uuid);
+    $history->findBySmsId($smsId, 'maxo');
+    $history->statusFor($uuid);
+    $history->search(new SmsHistoryQuery(recipient: '+61412345678'));
+    $history->failures(new SmsHistoryQuery);
+    ```
+
+    `find` loads one row by the package uuid. `findBySmsId` loads by Maxo's id, optionally on one connection. `statusFor` returns only the `SmsStatus`. `search` returns a paginator. `failures` returns rows whose status is `failed` or `rejected`.
+
+    `SmsHistoryQuery` filters, all optional: `recipient` (stored E.164), `connection`, `smsInbox`, `status`, `errorType`, `reference`, `from`, `to`.
+
+    An `SmsRecord` is one log row: `uuid`, `connection`, `recipient`, `status`, `sender`, `body` (null unless `SMS_STORE_BODY` is true), `smsId`, `smsInbox`, `reference`, `parts`, `price`, `metadata`, `errorType`, `errorMessage`, `providerError`, `providerReason`, `queuedAt`, `sentAt`, `failedAt`, `createdAt`.
+
+    ## Testing
+
+    `Sms::fake()` replaces the sender for the rest of the test. The calls below do not hit Maxo and do not write `sms_logs`. The fake still checks Australian numbers and still dispatches the SMS events.
+
+    ```php
+    Sms::fake();
+
+    SomeService::execute();
+
+    Sms::assertSentTo('0412345678');
+    Sms::assertSentCount(1);
+    Sms::assertNothingQueued();
+
+    Sms::shouldFail(\MaxoTel\Sms\Enums\SmsErrorType::InvalidRecipient);
+    Sms::shouldFailFor('0400000000', \MaxoTel\Sms\Enums\SmsErrorType::AuthenticationError);
+    ```
+
+    `assertSent` checks that something was sent, optionally with a callback. `assertSentTo` checks one recipient. `assertNotSentTo` checks that recipient was skipped. `assertNothingSent` and `assertSentCount` cover the send list. `assertQueued` and `assertNothingQueued` cover `queue()`. `shouldFail` fails every send with that error type. `shouldFailFor` fails one recipient. `respondWith` supplies a custom `SmsResult`. Automated tests must not call the live API.
+
+    ## Logging and privacy
+
+    Database logging is off until `SMS_LOG_MESSAGES=true`. The API key is never stored, never written to the log channel, and never put on events. Stored provider JSON is passed through `sms.redact`. Turn on `SMS_LOG_CHANNEL_ENABLED` only if you want a one-line log without the body. Schedule `model:prune` if you set `SMS_RETAIN_DAYS`.
+
+    ## Errors
+
+    `send()` returns a failed `SmsResult`. It throws only if you call `throw()`, or if the notification channel sends it.
+
+    `SmsErrorType` values:
+
+    - `invalid_recipient` means the number is not an Australian mobile, or Maxo rejected the destination. The package does not call HTTP for a local format failure.
+    - `invalid_sender` means Maxo rejected `origin`.
+    - `message_rejected` means Maxo rejected the message for another validation reason.
+    - `authentication_error` means HTTP 401 or 403 (missing key or missing permission).
+    - `configuration_error` means a bad setup such as HTTP 404, or a thrown `ConfigurationException` for a missing key, sender, or connection.
+    - `provider_unavailable` means HTTP 503.
+    - `indeterminate_error` means HTTP 500, 502, or 504, or a read timeout. The request may have reached Maxo. The package stores `failed` and does not retry. Retrying can send a second SMS.
+    - `network_error` means the connection never completed (DNS, connection refused, connect timeout, TLS).
+    - `unknown_error` means the package could not classify the failure.
+
+    `SmsStatus` is `pending`, `queued`, `sending`, `sent`, `failed`, or `rejected`. `rejected` is used for recipient, sender, and message-rejected failures. Other failures are `failed`.
+
+    ## Authentication
+
+    Every operation authenticates with the `key` field in the form body or query string. The package sends the form body. Live Maxo does not read `key` from a JSON body. Bearer tokens are not used. A missing or unknown key is HTTP 401. A key without **SMS/Send Messages** or **SMS/Get SMS Inbox** is HTTP 403 on the matching operation. Inbox calls raise `SmsInboxException` for those statuses. Send calls return a failed `SmsResult`.
+servers:
+  - url: https://myapi.maxo.com.au
+    description: Production MaxoTel API
+  - url: http://127.0.0.1:8001
+    description: Local mock API used by the sample app
+tags:
+  - name: Send
+    description: HTTP operations that require SMS/Send Messages. Laravel apps call Sms::to()->message()->send(), not these paths. The package POSTs a form body.
+  - name: Inbox
+    description: HTTP operations that require SMS/Get SMS Inbox. Laravel apps call SmsInboxes, not these paths. The package POSTs a form body. A 401 or 403 throws SmsInboxException.
+paths:
+  /sms/send:
+    post:
+      tags: [Send]
+      operationId: sendSms
+      summary: Send an SMS
+      description: |
+        Called by `Sms::to()->message()->send()` when no inbox is set.
+        The package sends a form body. Live Maxo rejects a JSON body. The same fields are also accepted as a query string.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SendRequest'
+            example:
+              key: test-full-access
+              origin: "0480011223"
+              destination: "0412345678"
+              message: Hello from Laravel
+      responses:
+        '200':
+          description: Accepted by Maxo. This is not a delivery receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendSuccess'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenSend'
+  /sms/{smsinbox}/send:
+    post:
+      tags: [Send]
+      operationId: sendSmsToInbox
+      summary: Send an SMS through an inbox
+      description: |
+        Called when `->inbox()` or `MAXO_SMS_INBOX` is set.
+        `test-full-access` in examples is mock fixture data.
+      parameters:
+        - $ref: '#/components/parameters/SmsInbox'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SendRequest'
+      responses:
+        '200':
+          description: Accepted by Maxo. This is not a delivery receipt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendSuccess'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenSend'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /sms/list:
+    post:
+      tags: [Inbox]
+      operationId: listInboxes
+      summary: List SMS inboxes
+      description: Called by `SmsInboxes::all()`.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/KeyRequest'
+            example:
+              key: test-full-access
+      responses:
+        '200':
+          description: Inbox list for the authenticated key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboxList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenInbox'
+  /sms/{smsinbox}/messages:
+    post:
+      tags: [Inbox]
+      operationId: listInboxMessages
+      summary: List messages in an inbox
+      description: |
+        Called by `SmsInboxes::messages()` and `messagesCsv()`. `startTime` and `endTime` are required.
+        `contact` is an optional Australian mobile filter. `messagesCsv()` also sends `outputFormat=csv`
+        and `showHeadings=1` unless headings are turned off. That response is CSV, not `MessageList`.
+      parameters:
+        - $ref: '#/components/parameters/SmsInbox'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/MessagesRequest'
+            example:
+              key: test-full-access
+              startTime: "2024-06-01"
+              endTime: "2024-06-30"
+              contact: "0412345678"
+      responses:
+        '200':
+          description: Messages in the requested window. JSON `status` is Maxo's raw delivery string. CSV is the raw file from `outputFormat=csv`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageList'
+            text/csv:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/ForbiddenInbox'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  parameters:
+    SmsInbox:
+      name: smsinbox
+      in: path
+      required: true
+      description: Numeric Maxo inbox id, such as the value of `MAXO_SMS_INBOX`.
+      schema:
+        type: integer
+        example: 10
+  schemas:
+    SendRequest:
+      type: object
+      required: [key, origin, destination, message]
+      properties:
+        key:
+          type: string
+          description: The API key for the connection. The package copies it from MAXO_SMS_KEY or MAXO_SMS_SANDBOX_KEY. Also accepted as a query or form field. Not a bearer token.
+        origin:
+          type: string
+          description: The sender the package resolved from ->from(), then the connection from, then SMS_FROM.
+          example: "0480011223"
+        destination:
+          type: string
+          description: The recipient as a local 04 number. The package converts +614 and 614 before this request.
+          example: "0412345678"
+        message:
+          type: string
+          example: Hello from Laravel
+    KeyRequest:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          description: API key with SMS/Get SMS Inbox. Mock fixture example is `test-full-access`.
+    MessagesRequest:
+      type: object
+      required: [key, startTime, endTime]
+      properties:
+        key:
+          type: string
+        startTime:
+          type: string
+          description: Start of the inbox window. Date or Unix timestamp.
+          example: "2024-06-01"
+        endTime:
+          type: string
+          description: End of the inbox window. Date or Unix timestamp. Must be greater than or equal to startTime.
+          example: "2024-06-30"
+        contact:
+          type: string
+          description: Optional Australian mobile filter.
+          example: "0412345678"
+        outputFormat:
+          type: string
+          description: Set to `csv` for `messagesCsv()`. Omitted by `messages()`.
+          example: csv
+        showHeadings:
+          type: integer
+          description: Sent as `1` with `outputFormat=csv` when headings are requested. Omitted otherwise.
+          example: 1
+    SendSuccess:
+      type: object
+      required: [status, request, smsid]
+      properties:
+        status:
+          type: integer
+          enum: [1]
+        request:
+          type: string
+          example: sms/send
+        smsid:
+          type: integer
+          example: 1980554
+        parts:
+          type: integer
+          example: 1
+        price:
+          type: number
+          format: float
+          example: 0.1
+    ErrorBody:
+      type: object
+      required: [status, error, reason]
+      properties:
+        status:
+          type: integer
+          enum: [0]
+        request:
+          type: string
+        error:
+          type: string
+          example: VALIDATION
+        reason:
+          type: string
+          example: Sending to International numbers is not supported
+    InboxList:
+      type: object
+      properties:
+        status:
+          type: integer
+          enum: [1]
+        request:
+          type: string
+          example: sms/list
+        count:
+          type: integer
+        smsinboxes:
+          type: array
+          items:
+            type: object
+            properties:
+              smsinbox:
+                type: integer
+                example: 10
+              name:
+                type: string
+                example: Customer SMS
+              senderid:
+                type: string
+                example: "0480011223"
+    MessageList:
+      type: object
+      properties:
+        status:
+          type: integer
+          enum: [1]
+        request:
+          type: string
+        timezone:
+          type: string
+        offset:
+          type: string
+        starttime:
+          type: string
+        endtime:
+          type: string
+        count:
+          type: integer
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              smsid:
+                type: integer
+              smsinbox:
+                type: integer
+              datetime:
+                type: string
+              unixtime:
+                type: integer
+              contact:
+                type: string
+              direction:
+                type: string
+                enum: [Send, Receive]
+              origin:
+                type: string
+              destination:
+                type: string
+              status:
+                type: string
+                description: Raw Maxo delivery status, such as Delivered. Not an SmsStatus.
+                example: Delivered
+              read:
+                type: integer
+              cost:
+                type: string
+              message:
+                type: string
+  responses:
+    ValidationError:
+      description: The request was rejected. The package maps destination errors to InvalidRecipient and origin errors to InvalidSender.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+    Unauthenticated:
+      description: Missing or unknown API key. HTTP 401.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            status: 0
+            request: sms/send
+            error: UNAUTHORISED
+            reason: Invalid or missing API key.
+    ForbiddenSend:
+      description: The key is authenticated but lacks SMS/Send Messages. HTTP 403.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            status: 0
+            request: sms/send
+            error: FORBIDDEN
+            reason: The supplied key has insufficient permissions for SMS/Send Messages.
+    ForbiddenInbox:
+      description: The key is authenticated but lacks SMS/Get SMS Inbox. HTTP 403.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+          example:
+            status: 0
+            request: sms/list
+            error: FORBIDDEN
+            reason: The supplied key has insufficient permissions for SMS/Get SMS Inbox.
+    NotFound:
+      description: Unknown inbox or path. HTTP 404.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'

@@ -1,0 +1,53 @@
+{
+    "name": "maxotel/laravel-maxo-sms",
+    "description": "Idiomatic Laravel access to the MaxoTel SMS API.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["laravel", "sms", "maxotel", "maxo"],
+    "require": {
+        "php": "^8.4",
+        "illuminate/bus": "^12.0",
+        "illuminate/contracts": "^12.0",
+        "illuminate/database": "^12.0",
+        "illuminate/http": "^12.0",
+        "illuminate/log": "^12.0",
+        "illuminate/notifications": "^12.0",
+        "illuminate/queue": "^12.0",
+        "illuminate/support": "^12.0"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.24",
+        "orchestra/testbench": "^10.0",
+        "pestphp/pest": "^3.8",
+        "pestphp/pest-plugin-laravel": "^3.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "MaxoTel\\Sms\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "MaxoTel\\Sms\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "MaxoTel\\Sms\\SmsServiceProvider"
+            ],
+            "aliases": {
+                "Sms": "MaxoTel\\Sms\\Facades\\Sms"
+            }
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

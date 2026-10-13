@@ -1,0 +1,49 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::connection(config('sms.logging.connection'))->create(config('sms.logging.table', 'sms_logs'), function (Blueprint $table) {
+            $table->id();
+            $table->uuid('uuid')->unique();
+            $table->string('connection');
+            $table->string('recipient');
+            $table->string('sender')->nullable();
+            $table->text('body')->nullable();
+            $table->string('status');
+            $table->unsignedBigInteger('sms_id')->nullable();
+            $table->unsignedInteger('sms_inbox')->nullable();
+            $table->string('reference')->nullable();
+            $table->string('idempotency_key')->nullable();
+            $table->unsignedInteger('parts')->nullable();
+            $table->decimal('price', 8, 4)->nullable();
+            $table->json('metadata')->nullable();
+            $table->string('error_type')->nullable();
+            $table->text('error_message')->nullable();
+            $table->string('provider_error')->nullable();
+            $table->text('provider_reason')->nullable();
+            $table->json('provider_response')->nullable();
+            $table->timestamp('queued_at')->nullable();
+            $table->timestamp('sent_at')->nullable();
+            $table->timestamp('failed_at')->nullable();
+            $table->timestamps();
+
+            $table->index('sms_id');
+            $table->index('recipient');
+            $table->index('status');
+            $table->index('reference');
+            $table->index('created_at');
+            $table->unique(['connection', 'idempotency_key', 'recipient']);
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::connection(config('sms.logging.connection'))->dropIfExists(config('sms.logging.table', 'sms_logs'));
+    }
+};
