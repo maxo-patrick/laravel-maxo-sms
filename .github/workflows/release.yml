@@ -1,0 +1,65 @@
+
+name: Create GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }} / ${{ matrix.dependencies }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.4', '8.5']
+        dependencies: ['lowest', 'highest']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: |
+          if [ "${{ matrix.dependencies }}" = "lowest" ]; then
+            composer update --prefer-lowest --prefer-dist --no-interaction
+          else
+            composer update --prefer-dist --no-interaction
+          fi
+
+      - name: Run tests
+        run: vendor/bin/pest
+
+      - name: Run static analysis
+        run: vendor/bin/phpstan analyse --no-progress
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: tests
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --verify-tag \
+            --generate-notes \
+            --title "$TAG"
