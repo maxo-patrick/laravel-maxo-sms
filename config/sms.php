@@ -25,8 +25,8 @@ return [
             'base_uri' => env('MAXO_SMS_BASE_URI', 'https://myapi.maxo.com.au/'),
             'from' => env('MAXO_SMS_FROM'),
             'smsinbox' => env('MAXO_SMS_INBOX'),
-            'timeout' => 10,
-            'connect_timeout' => 5,
+            'timeout' => env('MAXO_SMS_TIMEOUT', 10),
+            'connect_timeout' => env('MAXO_SMS_CONNECT_TIMEOUT', 10),
         ],
 
         'maxo-sandbox' => [
@@ -34,8 +34,8 @@ return [
             'base_uri' => env('MAXO_SMS_BASE_URI', 'https://myapi.maxo.com.au/'),
             'from' => env('MAXO_SMS_SANDBOX_FROM'),
             'smsinbox' => env('MAXO_SMS_SANDBOX_INBOX'),
-            'timeout' => 10,
-            'connect_timeout' => 5,
+            'timeout' => env('MAXO_SMS_SANDBOX_TIMEOUT', 10),
+            'connect_timeout' => env('MAXO_SMS_SANDBOX_CONNECT_TIMEOUT', 10),
         ],
     ],
 
