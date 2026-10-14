@@ -45,6 +45,8 @@ The API key must have the **SMS/Send Messages** permission. Inbox listing and re
 
 ## Quickstart
 
+### Send a message
+
 ```php
 use MaxoTel\Sms\Facades\Sms;
 
@@ -59,7 +61,44 @@ if ($result->successful) {
 $result->throw(); // optional: raise SmsSendException on failure
 ```
 
+### List inboxes
 
+Inject `SmsInboxes` and call `all()`. The default connection is used when you omit the connection name.
+
+```php
+use Illuminate\Http\JsonResponse;
+use MaxoTel\Sms\Contracts\SmsInboxes;
+
+public function listInboxes(SmsInboxes $inboxes): JsonResponse
+{
+    return response()->json($inboxes->all());
+}
+```
+
+### Read messages from an inbox
+
+Replace `1234` with an inbox ID from the list above. This reads messages from the last 30 days.
+
+```php
+use Illuminate\Http\JsonResponse;
+use MaxoTel\Sms\Contracts\SmsInboxes;
+use MaxoTel\Sms\Data\InboxMessageQuery;
+
+public function inboxMessages(SmsInboxes $inboxes): JsonResponse
+{
+    $inboxId = 1234; // replace with your inbox ID
+
+    $messages = $inboxes->messages(
+        $inboxId,
+        new InboxMessageQuery(
+            startTime: now()->subDays(30),
+            endTime: now(),
+        ),
+    );
+
+    return response()->json($messages);
+}
+```
 
 ## Documentation
 
